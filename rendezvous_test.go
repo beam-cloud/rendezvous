@@ -4,7 +4,13 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+
+	_ "cmp"
 )
+
+func bytesFromString(s string) []byte {
+	return []byte(s)
+}
 
 var sampleKeys = []string{
 	"352DAB08-C1FD-4462-B573-7640B730B721",
@@ -14,57 +20,61 @@ var sampleKeys = []string{
 	"C7ECC571-E924-4523-A313-951DFD5D8073",
 }
 
-type getTestcase struct {
+type getTestcase[N comparable] struct {
 	key          string
-	expectedNode string
+	expectedNode N
+	expectOk     bool
 }
 
 func TestHashGet(t *testing.T) {
-	hash := New()
+	hash := New[string](bytesFromString)
 
-	gotNode := hash.Get("foo")
-	if len(gotNode) != 0 {
-		t.Errorf("got: %#v, expected: %#v", gotNode, "")
+	gotNode, ok := hash.Get("foo")
+	if ok || gotNode != "" {
+		t.Errorf("got: (%q, %t), expected: (%q, false)", gotNode, ok, "")
 	}
 
-	hash.Add("a", "b", "c", "d", "e")
+	nodes := []string{"a", "b", "c", "d", "e"}
+	hash.Add(nodes...)
 
-	testcases := []getTestcase{
-		{"", "d"},
-		{"foo", "e"},
-		{"bar", "c"},
+	testcases := []getTestcase[string]{
+		{"", "d", true},
+		{"foo", "e", true},
+		{"bar", "c", true},
 	}
 
 	for _, testcase := range testcases {
-		gotNode := hash.Get(testcase.key)
-		if gotNode != testcase.expectedNode {
-			t.Errorf("got: %#v, expected: %#v", gotNode, testcase.expectedNode)
+		gotNode, ok := hash.Get(testcase.key)
+		if ok != testcase.expectOk || gotNode != testcase.expectedNode {
+			t.Errorf("key=%q - got: (%q, %t), expected: (%q, %t)", testcase.key, gotNode, ok, testcase.expectedNode, testcase.expectOk)
 		}
 	}
 }
 
 func BenchmarkHashGet_5nodes(b *testing.B) {
-	hash := New("a", "b", "c", "d", "e")
+	hash := New(bytesFromString, "a", "b", "c", "d", "e")
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		hash.Get(sampleKeys[i%len(sampleKeys)])
 	}
 }
 
 func BenchmarkHashGet_10nodes(b *testing.B) {
-	hash := New("a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
+	hash := New(bytesFromString, "a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		hash.Get(sampleKeys[i%len(sampleKeys)])
 	}
 }
 
-type getNTestcase struct {
+type getNTestcase[N comparable] struct {
 	count         int
 	key           string
-	expectedNodes []string
+	expectedNodes []N
 }
 
 func Test_Hash_GetN(t *testing.T) {
-	hash := New()
+	hash := New[string](bytesFromString)
 
 	gotNodes := hash.GetN(2, "foo")
 	if len(gotNodes) != 0 {
@@ -73,7 +83,7 @@ func Test_Hash_GetN(t *testing.T) {
 
 	hash.Add("a", "b", "c", "d", "e")
 
-	testcases := []getNTestcase{
+	testcases := []getNTestcase[string]{
 		{1, "foo", []string{"e"}},
 		{2, "bar", []string{"c", "e"}},
 		{3, "baz", []string{"d", "a", "b"}},
@@ -85,63 +95,68 @@ func Test_Hash_GetN(t *testing.T) {
 	for _, testcase := range testcases {
 		gotNodes := hash.GetN(testcase.count, testcase.key)
 		if !reflect.DeepEqual(gotNodes, testcase.expectedNodes) {
-			t.Errorf("got: %#v, expected: %#v", gotNodes, testcase.expectedNodes)
+			t.Errorf("key=%q, count=%d - got: %v, expected: %v", testcase.key, testcase.count, gotNodes, testcase.expectedNodes)
 		}
 	}
 }
 
 func BenchmarkHashGetN3_5_nodes(b *testing.B) {
-	hash := New("a", "b", "c", "d", "e")
+	hash := New(bytesFromString, "a", "b", "c", "d", "e")
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		hash.GetN(3, sampleKeys[i%len(sampleKeys)])
 	}
 }
 
 func BenchmarkHashGetN5_5_nodes(b *testing.B) {
-	hash := New("a", "b", "c", "d", "e")
+	hash := New(bytesFromString, "a", "b", "c", "d", "e")
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		hash.GetN(5, sampleKeys[i%len(sampleKeys)])
 	}
 }
 
 func BenchmarkHashGetN3_10_nodes(b *testing.B) {
-	hash := New("a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
+	hash := New(bytesFromString, "a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		hash.GetN(3, sampleKeys[i%len(sampleKeys)])
 	}
 }
 
 func BenchmarkHashGetN5_10_nodes(b *testing.B) {
-	hash := New("a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
+	hash := New(bytesFromString, "a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		hash.GetN(5, sampleKeys[i%len(sampleKeys)])
 	}
 }
 
 func TestHashRemove(t *testing.T) {
-	hash := New("a", "b", "c")
+	nodes := []string{"a", "b", "c"}
+	hash := New(bytesFromString, nodes...)
 
 	var keyForB string
+	nodeB := "b"
+
 	for i := 0; i < 10000; i++ {
 		randomKey := fmt.Sprintf("key-%d", i)
-		if hash.Get(randomKey) == "b" {
+		if node, ok := hash.Get(randomKey); ok && node == nodeB {
 			keyForB = randomKey
 			break
 		}
 	}
 
 	if keyForB == "" {
-		t.Fatalf("Failed to find a key that maps to 'b'")
+		t.Fatalf("Failed to find a key that maps to node %q", nodeB)
 	}
 
-	hash.Remove("b")
+	hash.Remove(nodeB)
 
-	// Check if the key now maps to a different node
-	newNode := hash.Get(keyForB)
-	if newNode == "b" {
-		t.Errorf("Key %s still maps to removed node 'b'", keyForB)
-	}
-	if newNode == "" {
-		t.Errorf("Key %s does not map to any node after removing 'b'", keyForB)
+	newNode, ok := hash.Get(keyForB)
+	if !ok {
+		t.Errorf("Key %q does not map to any node after removing %q", keyForB, nodeB)
+	} else if newNode == nodeB {
+		t.Errorf("Key %q still maps to removed node %q (%q)", keyForB, nodeB, newNode)
 	}
 }
