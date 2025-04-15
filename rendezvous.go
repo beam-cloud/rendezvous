@@ -1,9 +1,9 @@
 // Package rendezvous implements rendezvous hashing (a.k.a. highest random
-// weight hashing). See http://en.wikipedia.org/wiki/Rendezvous_hashing for
-// more information.
+// weight hashing).
 package rendezvous
 
 import (
+	"bytes"
 	"cmp"
 	"hash"
 	"hash/crc32"
@@ -13,38 +13,38 @@ import (
 
 var crc32Table = crc32.MakeTable(crc32.Castagnoli)
 
-// BytesFunc defines how a node N is converted to bytes for hashing.
-type BytesFunc[N any] func(N) []byte
-
-type Hash[N cmp.Ordered] struct {
-	nodes     nodeScores[N]
-	hasher    hash.Hash32
-	bytesFunc BytesFunc[N]
+// Hashable defines the requirements for a node type.
+// It must provide a method to get its byte representation for hashing.
+type Hashable interface {
+	Bytes() []byte
 }
 
-type nodeScore[N cmp.Ordered] struct {
-	node      N
-	nodeBytes []byte
-	score     uint32
+// Hash implements rendezvous hashing for nodes of type N
+// that satisfy the Hashable interface.
+type Hash[N Hashable] struct {
+	nodes  nodeScores[N]
+	hasher hash.Hash32
 }
 
-// New returns a new Hash ready for use with the given nodes and byte conversion function.
-// N must be an ordered type (implementing cmp.Ordered).
-// bytesFunc specifies how to convert a node of type N to []byte for hashing.
-func New[N cmp.Ordered](bytesFunc BytesFunc[N], nodes ...N) *Hash[N] {
+// nodeScore holds a node and its calculated score for a given key.
+type nodeScore[N Hashable] struct {
+	node  N
+	score uint32
+}
+
+// New returns a new Hash ready for use with the given nodes.
+// N must satisfy the Hashable interface.
+func New[N Hashable](nodes ...N) *Hash[N] {
 	hash := &Hash[N]{
-		hasher:    crc32.New(crc32Table),
-		bytesFunc: bytesFunc,
+		hasher: crc32.New(crc32Table),
 	}
 	hash.Add(nodes...)
 	return hash
 }
 
-// Add adds additional nodes to the Hash.
 func (h *Hash[N]) Add(nodes ...N) {
 	for _, node := range nodes {
-		nodeBytes := h.bytesFunc(node)
-		h.nodes = append(h.nodes, nodeScore[N]{node: node, nodeBytes: nodeBytes})
+		h.nodes = append(h.nodes, nodeScore[N]{node: node})
 	}
 }
 
@@ -56,46 +56,41 @@ func (h *Hash[N]) Get(key string) (N, bool) {
 		return zero, false
 	}
 
-	var maxScore uint32
-	maxNodeScore := h.nodes[0]
-
 	keyBytes := unsafeBytes(key)
 
-	// Calculate score for the first node
-	maxNodeScore.score = h.hash(maxNodeScore.nodeBytes, keyBytes)
-	maxScore = maxNodeScore.score
+	maxNode := h.nodes[0].node
+	maxScore := h.hash(maxNode, keyBytes)
+	maxNodeBytes := maxNode.Bytes()
 
-	// Iterate over remaining nodes
 	for i := 1; i < len(h.nodes); i++ {
-		nodeScore := h.nodes[i]
-		score := h.hash(nodeScore.nodeBytes, keyBytes)
+		currentNode := h.nodes[i].node
+		score := h.hash(currentNode, keyBytes)
 
-		if score > maxScore || (score == maxScore && cmp.Compare(nodeScore.node, maxNodeScore.node) < 0) {
+		if score > maxScore || (score == maxScore && bytes.Compare(currentNode.Bytes(), maxNodeBytes) < 0) {
 			maxScore = score
-			maxNodeScore = h.nodes[i]
+			maxNode = currentNode
+			maxNodeBytes = maxNode.Bytes()
 		}
 	}
 
-	return maxNodeScore.node, true
+	return maxNode, true
 }
 
 // GetN returns no more than n nodes for the given key, ordered by descending score.
-// GetN modifies the internal state for sorting and is not goroutine-safe.
 func (h *Hash[N]) GetN(n int, key string) []N {
 	if len(h.nodes) == 0 {
 		return nil
 	}
 	keyBytes := unsafeBytes(key)
 	for i := range h.nodes {
-		h.nodes[i].score = h.hash(h.nodes[i].nodeBytes, keyBytes)
+		h.nodes[i].score = h.hash(h.nodes[i].node, keyBytes)
 	}
 
-	// Use slices.SortFunc with cmp.Compare for tie-breaking
 	slices.SortFunc(h.nodes, func(a, b nodeScore[N]) int {
 		if b.score != a.score {
 			return cmp.Compare(b.score, a.score)
 		}
-		return cmp.Compare(a.node, b.node)
+		return bytes.Compare(a.node.Bytes(), b.node.Bytes())
 	})
 
 	if n > len(h.nodes) {
@@ -109,25 +104,25 @@ func (h *Hash[N]) GetN(n int, key string) []N {
 	return nodes
 }
 
-// Remove removes a node from the Hash, if it exists
 func (h *Hash[N]) Remove(node N) {
+	nodeBytesToRemove := node.Bytes()
 	h.nodes = slices.DeleteFunc(h.nodes, func(ns nodeScore[N]) bool {
-		return cmp.Compare(ns.node, node) == 0
+		return bytes.Equal(ns.node.Bytes(), nodeBytesToRemove)
 	})
 }
 
-type nodeScores[N cmp.Ordered] []nodeScore[N]
+// nodeScores is a slice of nodeScore structs.
+type nodeScores[N Hashable] []nodeScore[N]
 
-// hash generates the score using pre-calculated node bytes and the key.
-func (h *Hash[N]) hash(nodeBytes, key []byte) uint32 {
+// hash generates the score using the node's HashBytes method and the key.
+func (h *Hash[N]) hash(node N, key []byte) uint32 {
 	h.hasher.Reset()
 	h.hasher.Write(key)
-	h.hasher.Write(nodeBytes) // Use pre-calculated bytes
+	h.hasher.Write(node.Bytes())
 	return h.hasher.Sum32()
 }
 
 // unsafeBytes converts string to byte slice without allocation.
-// Requires Go 1.20+.
 func unsafeBytes(s string) []byte {
 	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
